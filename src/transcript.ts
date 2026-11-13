@@ -59,6 +59,52 @@ function nativeToolUseId(id: string): string {
 }
 
 export function prepareMessages(messages: Message[], model: Model<any>): Message[] {
+  return closeOrphanedToolCalls(normalizeMessages(messages, model));
+}
+
+/**
+ * The Messages API rejects a tool_use without a tool_result in the next user
+ * turn. History can hold one, e.g. a forked session branched while the tool
+ * call was still running. Like pi-ai's transformMessages, insert an error
+ * result for each unanswered call before the next user or assistant message.
+ */
+function closeOrphanedToolCalls(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let pending: Array<{ id: string; name: string }> = [];
+  const answered = new Set<string>();
+  const close = () => {
+    for (const call of pending) {
+      if (answered.has(call.id)) continue;
+      result.push({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: "No result provided" }],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+    pending = [];
+    answered.clear();
+  };
+  for (const message of messages) {
+    if (message.role === "toolResult") {
+      answered.add(message.toolCallId);
+    } else if (message.role === "user" || message.role === "assistant") {
+      close();
+      if (message.role === "assistant") {
+        pending = message.content.flatMap((block) =>
+          block.type === "toolCall" ? [{ id: block.id, name: block.name }] : [],
+        );
+      }
+    }
+    result.push(message);
+  }
+  close();
+  return result;
+}
+
+function normalizeMessages(messages: Message[], model: Model<any>): Message[] {
   const toolCallIds = new Map<string, string>();
   return messages.map((message) => {
     if (message.role === "toolResult") {

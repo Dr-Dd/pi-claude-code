@@ -304,3 +304,36 @@ test("normalizes foreign tool call ids and drops foreign reasoning before replay
   assert.equal((frames[2]?.message.content[0] as { tool_use_id: string }).tool_use_id, toolUse[1]!.id);
   assert.deepEqual(messages, original);
 });
+
+test("closes tool calls left without results, as in a fork taken mid tool call", () => {
+  const model = { id: "opus", api: "claude-code", provider: "claude-code", input: ["text"] } as unknown as Model<any>;
+  const call = (id: string): AssistantMessage => ({
+    role: "assistant",
+    api: "claude-code",
+    provider: "claude-code",
+    model: "opus",
+    content: [{ type: "toolCall", id, name: "subagent", arguments: {} }],
+    usage,
+    stopReason: "toolUse",
+    timestamp: 1,
+  });
+  const messages: Message[] = [
+    { role: "user", content: "go", timestamp: 0 },
+    call("answered"),
+    { role: "toolResult", toolCallId: "answered", toolName: "subagent", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 2 },
+    call("orphan"),
+    { role: "user", content: "Task: you are a forked subagent", timestamp: 3 },
+  ];
+  const frames = prepareFrames(prepareMessages(messages, model));
+  assert.deepEqual(
+    frames.map((frame) => frame.message.content.map((block) => (block as { type: string }).type)),
+    [["text"], ["tool_use"], ["tool_result"], ["tool_use"], ["tool_result", "text"]],
+  );
+  const synthetic = frames[4]!.message.content[0] as { tool_use_id: string; is_error: boolean };
+  assert.equal(synthetic.tool_use_id, "orphan");
+  assert.equal(synthetic.is_error, true);
+
+  const tail = prepareMessages(messages.slice(0, 4), model);
+  assert.equal(tail.length, 5);
+  assert.equal(tail[4]!.role, "toolResult");
+});
